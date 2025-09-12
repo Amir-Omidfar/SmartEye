@@ -29,9 +29,22 @@
 		32ECAB6A2E72844200738FF6 /* SmartEyeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SmartEyeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		32ECAB872E730F6D00738FF6 /* Exceptions for "SmartEye" folder in "SmartEye" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 32ECAB522E72843E00738FF6 /* SmartEye */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		32ECAB552E72843E00738FF6 /* SmartEye */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				32ECAB872E730F6D00738FF6 /* Exceptions for "SmartEye" folder in "SmartEye" target */,
+			);
 			path = SmartEye;
 			sourceTree = "<group>";
 		};
@@ -400,6 +413,10 @@
 				DEVELOPMENT_TEAM = YEW9947H62;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SmartEye/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app uses the camera and LiDAR sensor to detect obstacles for navigation assistance";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "This app uses your location for outdoor navigation (future feature).";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app may use the microphone for future voice commands and navigation features.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -428,6 +445,10 @@
 				DEVELOPMENT_TEAM = YEW9947H62;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SmartEye/Info.plist;
+				INFOPLIST_KEY_NSCameraUsageDescription = "This app uses the camera and LiDAR sensor to detect obstacles for navigation assistance";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "This app uses your location for outdoor navigation (future feature).";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app may use the microphone for future voice commands and navigation features.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
