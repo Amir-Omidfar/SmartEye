@@ -50,7 +50,10 @@ struct ObstacleAvoidanceView: View {
             hapticManager.prepare() // initialize engine
             VoiceManager.announce("Obstacle Avoidance Mode Started!")
         }
-        
+        .onDisappear(){
+            arManager.stopSession()
+            VoiceManager.announce("Obstacle Avoidance Mode Stopped!")
+        }
         }
     }
     
