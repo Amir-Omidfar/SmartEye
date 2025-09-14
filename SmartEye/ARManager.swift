@@ -4,63 +4,204 @@ import ARKit
 import Combine
 import simd
 
-final class ARManager: NSObject, ObservableObject {
-    @Published var nearestDistance: Float? = nil
-    @Published var isRelocalized: Bool = false
 
-    private let session = ARSession()
+/// ARManager: single place to run ARSession (SLAM), expose pose & relocalization,
+/// provide map (ARWorldMap) save/load helpers, and throttle mode-1 feedback.
+
+final class ARManager: NSObject, ObservableObject {
+    // MARK: - Published state for UI binding
+    @Published var nearestDistance: Float? = nil          // from mode 1 depth sampling
+    @Published var isRelocalized: Bool = false           // whether ARKit reports mapped/extended
+    @Published var currentTransform: simd_float4x4 = matrix_identity_float4x4 // device transform
+    @Published var currentPosition: SIMD3<Float> = [0,0,0] // convenience
+    
+    let arSession = ARSession() //exposed so Views can call run/pause if needed
+    
+    // MARK: Private internals
     private var lastAnnouncedDistance: Float?
-    private var lastFeedbackTime: Date = .distantPast
-    private var feedbackInterval: TimeInterval = 1
-    private var lastProcessedDistance: Float?
     private var announcementThresholds: [Float] = [1.5, 1.0, 0.5] // meters
-    private var cancellables = Set<AnyCancellable>()
+    // Throttling controls
+    private var lastFeedbackTime: Date = .distantPast
+    private var feedbackInterval: TimeInterval = 0.7 // seconds (adjustable)
+    private var feedbackDistanceLimit: Float = 0.1   // meters (adjustable)
+    private var runDistanceCheck = false             // boolean to use the distance check
+    private var lastProcessedDistance: Float?
+    
+    private var cancellables = Set<AnyCancellable>() // TODO: remove
 
     override init() {
         super.init()
-        session.delegate = self
+        arSession.delegate = self
     }
 
+    // MARK: - Session lifecycle
+    /// Start SLAM session. Uses scene reconstruction (mesh) when device supports it (LiDAR)
+    /// Using scene reconstruction (mesh) gives denser geometry on LiDAR devices. See Apple docs.
+    
     func startSession() {
         let config = ARWorldTrackingConfiguration()
+        
+        // Use scene reconstruction when available (LiDAR devices)
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            config.sceneReconstruction = .mesh
+        }
+        // Use sceneDepth on devices that support if (it helps obstacle avoidance)
         if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
             config.frameSemantics.insert(.sceneDepth)
         }
         config.environmentTexturing = .none
-        session.run(config, options: [.resetTracking, .removeExistingAnchors])
+        arSession.run(config, options: [.resetTracking, .removeExistingAnchors])
+        
+        // reset public state
         isRelocalized = false
         nearestDistance = nil
     }
 
     func stopSession() {
-        session.pause()
+        arSession.pause()
         nearestDistance = nil
     }
+    
+    // MARK: - World map helpers
+
+        /// Capture ARKit's current ARWorldMap (async) — use this to persist maps.
+
+        func fetchCurrentWorldMap(completion: @escaping (ARWorldMap?) -> Void) {
+
+            arSession.getCurrentWorldMap { worldMap, error in
+
+                if let error = error {
+
+                    print("ARManager: error getting world map:", error.localizedDescription)
+
+                    completion(nil)
+
+                    return
+
+                }
+
+                completion(worldMap)
+
+            }
+
+        }
+
+
+
+        /// Save world map to a file URL (archives ARWorldMap). Calls completion on main queue.
+
+        func saveWorldMap(to url: URL, completion: @escaping (Bool, Error?) -> Void) {
+
+            fetchCurrentWorldMap { map in
+
+                guard let map = map else {
+
+                    DispatchQueue.main.async { completion(false, nil) }
+
+                    return
+
+                }
+
+                do {
+
+                    let data = try NSKeyedArchiver.archivedData(withRootObject: map, requiringSecureCoding: true)
+
+                    try data.write(to: url)
+
+                    DispatchQueue.main.async { completion(true, nil) }
+
+                } catch {
+
+                    DispatchQueue.main.async { completion(false, error) }
+
+                }
+
+            }
+
+        }
+
+
+
+        /// Load a world map previously archived at URL, and relaunch the session with it as the initial map.
+
+        func loadWorldMap(from url: URL, completion: @escaping (Bool, Error?) -> Void) {
+
+            do {
+
+                let data = try Data(contentsOf: url)
+
+                guard let worldMap = try NSKeyedUnarchiver.unarchivedObject(ofClass: ARWorldMap.self, from: data) else {
+
+                    DispatchQueue.main.async { completion(false, nil) }
+
+                    return
+
+                }
+
+
+
+                let config = ARWorldTrackingConfiguration()
+
+                if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+
+                    config.sceneReconstruction = .mesh
+
+                }
+
+                if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+
+                    config.frameSemantics.insert(.sceneDepth)
+
+                }
+
+                config.initialWorldMap = worldMap
+
+                arSession.run(config, options: [.resetTracking, .removeExistingAnchors])
+
+                DispatchQueue.main.async { completion(true, nil) }
+
+            } catch {
+
+                DispatchQueue.main.async { completion(false, error) }
+
+            }
+
+        }
 }
 
-// MARK: - ARSessionDelegate
+// MARK: - ARSessionDelegate: frame updates, depth sampling, relocalization
 extension ARManager: ARSessionDelegate {
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        // Sample near-center region depth to find nearest obstacle in front
+        // 1) update pose
+        let transform = frame.camera.transform
+        DispatchQueue.main.async {
+            self.currentTransform = transform
+            self.currentPosition = SIMD3<Float>(transform.columns.3.x,
+                                                transform.columns.3.y,
+                                                transform.columns.3.z)
+        }
+        
+        // 2) smaple depth if available (Mode 1 logic)
         if let sceneDepth = frame.sceneDepth?.depthMap {
             if let distance = sampleNearestDistance(depthMap: sceneDepth) {
-                DispatchQueue.main.async {
-                    self.nearestDistance = distance
-                }
-                processDistanceForFeedback(distance: distance)
+                DispatchQueue.main.async { self.nearestDistance = distance}
+                // apply throttling before feeding haptics/voice
+                processDistanceForFeedbackIfNeeded(distance: distance)
+            }
+            else {
+                DispatchQueue.main.async { self.nearestDistance = nil}
             }
         } else {
             // no scene depth available on device — set nil or a large default
-            DispatchQueue.main.async {
-                self.nearestDistance = nil
-            }
+            DispatchQueue.main.async { self.nearestDistance = nil}
         }
 
-        // detect relocalization (simple heuristic)
-        if frame.worldMappingStatus == .mapped || frame.worldMappingStatus == .extending {
-            DispatchQueue.main.async {
-                self.isRelocalized = true
-            }
+        // 3) relocalization status: set when map is well-formed
+        let status = frame.worldMappingStatus
+        if status == .mapped || status == .extending {
+            DispatchQueue.main.async { self.isRelocalized = true }
+        } else{
+            DispatchQueue.main.async { self.isRelocalized = false }
         }
     }
 
@@ -73,7 +214,7 @@ extension ARManager: ARSessionDelegate {
     }
 }
 
-// MARK: - Depth sampling & feedback logic
+// MARK: - Depth sampling & throttled feedback
 private extension ARManager {
     func sampleNearestDistance(depthMap: CVPixelBuffer) -> Float? {
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
@@ -109,20 +250,23 @@ private extension ARManager {
         let idx = max(0, min(depths.count - 1, Int(Double(depths.count) * 0.1)))
         return depths[idx]
     }
-
-    func processDistanceForFeedback(distance: Float) {
+    // Throttled feedback: combine time and distance thresholds
+    func processDistanceForFeedbackIfNeeded(distance: Float) {
         // simple hysteresis / announcement logic: announce when distance crosses thresholds
         // if closer than smallest threshold, urgent haptic + voice
         // Use HapticManager and VoiceManager to produce output
+        // Time gating
         let now = Date()
-        guard now.timeIntervalSince(lastFeedbackTime) > feedbackInterval else {
-            return //too soon, skip
+        if now.timeIntervalSince(lastFeedbackTime) < feedbackInterval  {
+            return //still within the rate limit, too soon, skip
         }
-        if let last = lastProcessedDistance, abs(last - distance) < 0.1 {
+        if let last = lastProcessedDistance, abs(last - distance) < feedbackDistanceLimit && runDistanceCheck{
             return
         }
+        // Accept this update
         lastFeedbackTime = now
         lastProcessedDistance = distance
+        if distance <= 0.0 {return}
         
         // urgency levels
         if distance <= announcementThresholds[2] {
@@ -162,53 +306,3 @@ private extension ARManager {
         return false
     }
 }
-/*
-import Foundation
-import ARKit
-import simd
-
-/// Manages ARKit session for obstacle detection
-class ARManager: NSObject, ObservableObject, ARSessionDelegate {
-    
-    let arSession = ARSession()
-    
-    /// Nearest detected obstacle distance in meters
-    @Published var nearestDistance: Float = .infinity
-    
-    override init() {
-        super.init()
-        arSession.delegate = self
-    }
-    
-    /// Called when ARKit updates frame
-    func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        guard let sceneDepth = frame.sceneDepth else { return }
-        
-        // Access depth map
-        let depthMap = sceneDepth.depthMap
-        let width = CVPixelBufferGetWidth(depthMap)
-        let height = CVPixelBufferGetHeight(depthMap)
-        
-        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
-        let baseAddress = unsafeBitCast(CVPixelBufferGetBaseAddress(depthMap),
-                                        to: UnsafeMutablePointer<Float32>.self)
-        
-        var minDistance: Float = .infinity
-        for y in stride(from: 0, to: height, by: 10) {
-            for x in stride(from: 0, to: width, by: 10) {
-                let index = y * width + x
-                let distance = baseAddress[index]
-                if distance > 0, distance < minDistance {
-                    minDistance = distance
-                }
-            }
-        }
-        
-        CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
-        
-        DispatchQueue.main.async {
-            self.nearestDistance = minDistance
-        }
-    }
-}
-*/
