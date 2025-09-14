@@ -1,3 +1,4 @@
+
 import Foundation
 import ARKit
 import Combine
@@ -9,6 +10,9 @@ final class ARManager: NSObject, ObservableObject {
 
     private let session = ARSession()
     private var lastAnnouncedDistance: Float?
+    private var lastFeedbackTime: Date = .distantPast
+    private var feedbackInterval: TimeInterval = 1
+    private var lastProcessedDistance: Float?
     private var announcementThresholds: [Float] = [1.5, 1.0, 0.5] // meters
     private var cancellables = Set<AnyCancellable>()
 
@@ -110,8 +114,16 @@ private extension ARManager {
         // simple hysteresis / announcement logic: announce when distance crosses thresholds
         // if closer than smallest threshold, urgent haptic + voice
         // Use HapticManager and VoiceManager to produce output
-        if distance <= 0.0 { return }
-
+        let now = Date()
+        guard now.timeIntervalSince(lastFeedbackTime) > feedbackInterval else {
+            return //too soon, skip
+        }
+        if let last = lastProcessedDistance, abs(last - distance) < 0.1 {
+            return
+        }
+        lastFeedbackTime = now
+        lastProcessedDistance = distance
+        
         // urgency levels
         if distance <= announcementThresholds[2] {
             // closest (< 0.5 m)
@@ -150,4 +162,53 @@ private extension ARManager {
         return false
     }
 }
+/*
+import Foundation
+import ARKit
+import simd
 
+/// Manages ARKit session for obstacle detection
+class ARManager: NSObject, ObservableObject, ARSessionDelegate {
+    
+    let arSession = ARSession()
+    
+    /// Nearest detected obstacle distance in meters
+    @Published var nearestDistance: Float = .infinity
+    
+    override init() {
+        super.init()
+        arSession.delegate = self
+    }
+    
+    /// Called when ARKit updates frame
+    func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        guard let sceneDepth = frame.sceneDepth else { return }
+        
+        // Access depth map
+        let depthMap = sceneDepth.depthMap
+        let width = CVPixelBufferGetWidth(depthMap)
+        let height = CVPixelBufferGetHeight(depthMap)
+        
+        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+        let baseAddress = unsafeBitCast(CVPixelBufferGetBaseAddress(depthMap),
+                                        to: UnsafeMutablePointer<Float32>.self)
+        
+        var minDistance: Float = .infinity
+        for y in stride(from: 0, to: height, by: 10) {
+            for x in stride(from: 0, to: width, by: 10) {
+                let index = y * width + x
+                let distance = baseAddress[index]
+                if distance > 0, distance < minDistance {
+                    minDistance = distance
+                }
+            }
+        }
+        
+        CVPixelBufferUnlockBaseAddress(depthMap, .readOnly)
+        
+        DispatchQueue.main.async {
+            self.nearestDistance = minDistance
+        }
+    }
+}
+*/
